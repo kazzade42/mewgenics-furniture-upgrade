@@ -40,5 +40,4 @@ FurnitureUpgrade-largefast  SHA256          99D2C8B0FF003F2D1085F7C48DC75588901F
 
 FurnitureUpgrade-smallslow   SHA256          1BE323B1C3D597717B1B2E6001030A663EEAEF7A9DF453E60FAECA4BFBEE0FBA
 
-'@
-[IO.File]::WriteAllLines((Join-Path (Get-Location) 'AUDIT.md'), ($audit -split "`r?`n"))
+'@[IO.File]::WriteAllLines((Join-Path (Get-Location) 'AUDIT.md'), ($audit -split "`r?`n"))
