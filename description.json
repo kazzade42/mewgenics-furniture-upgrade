@@ -1,0 +1,7 @@
+{
+  "title": "Furniture Upgrade",
+  "description": "Tiered furniture merging. Duplicate furniture pieces you own are combined into _plus1 through _plus5 upgraded variants with boosted stats, using the included FurnitureUpgrade save-editor tool - run it before launching the game. Works with or without Mewtator: install via Mewtator normally, or use the manual-install folder to drop the game-data files in by hand (see README.txt). Optionally pairs with Shop Filter (mewshopfilter), which keeps upgraded variants from cluttering Jack's shop late-game - not required, and Mewtator-only. Known issue: upgraded (_plusN) furniture can still appear in random furniture drops from adventure-map furniture-box tiles. Actively investigating - not yet fixed.",
+  "author": "DeepSeek-V4.1-Flash, with occasional help from Claude Code 2.1",
+  "version": "0.6.23",
+  "requirements": []
+}

@@ -1,0 +1,31 @@
+# PyInstaller
+build/
+dist/
+FurnitureUpgrade.spec.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build outputs
+FurnitureUpgrade-onefile/
+FurnitureUpgrade-onedir/
+
+# Dev artifacts
+FurnitureUpgrade-debug.txt
+FurnitureUpgrade-crash.log
+FurnitureUpgrade.v19-frozen.py
+FurnitureUpgrade-config.json
+backups/
+*.bak_scaling
+*.bak
+
+# Font .txt stubs
+fonts/*.txt
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
