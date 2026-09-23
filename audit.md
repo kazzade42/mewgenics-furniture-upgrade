@@ -1,4 +1,3 @@
-$audit = @'
 # Audit Notes for Nexus Mods Review
 
 This file exists to make the source-to-binary review as quick as possible.
@@ -33,11 +32,8 @@ None. Grep the source for `subprocess`, `os.system`, `os.popen` — all absent.
 See BUILD.md. The same source produces a byte-identical exe (modulo
 timestamps) on Windows 10+ with Python 3.14 and PyInstaller.
 
-## SHA-256 of the uploaded archive
-furniture upgrade raw SHA256          63AE6CA88894D8A752334430A88EC55576340283A44B974C67D2CCD403B45FA8
+## SHA-256 of uploaded archives
 
-FurnitureUpgrade-largefast  SHA256          99D2C8B0FF003F2D1085F7C48DC75588901F11D1E5FC9BB1C8CF3D04F8492EC9
-
-FurnitureUpgrade-smallslow   SHA256          1BE323B1C3D597717B1B2E6001030A663EEAEF7A9DF453E60FAECA4BFBEE0FBA
-
-'@[IO.File]::WriteAllLines((Join-Path (Get-Location) 'AUDIT.md'), ($audit -split "`r?`n"))
+- **FurnitureUpgrade-Raw.zip**:       `63AE6CA88894D8A752334430A88EC55576340283A44B974C67D2CCD403B45FA8`
+- **FurnitureUpgrade-largefast.zip**: `99D2C8B0FF003F2D1085F7C48DC75588901F11D1E5FC9BB1C8CF3D04F8492EC9`
+- **FurnitureUpgrade-smallslow.zip**: `1BE323B1C3D597717B1B2E6001030A663EEAEF7A9DF453E60FAECA4BFBEE0FBA`
