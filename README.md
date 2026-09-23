@@ -107,6 +107,7 @@ N most recent backups so this folder doesn't grow forever.
   If it bothers you, the raw Python version sidesteps this entirely.
 - Close Mewgenics before running the tool, and don't run the game
   and the tool at the same time.
+- The game loads certain aspects of the furniture at launch. Quitting to menu may seem to technically work, but this caused a couple issues during testing.
 
 ## Requirements
 
