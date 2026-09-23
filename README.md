@@ -108,6 +108,8 @@ N most recent backups so this folder doesn't grow forever.
 - Close Mewgenics before running the tool, and don't run the game
   and the tool at the same time.
 - The game loads certain aspects of the furniture at launch. Quitting to menu may seem to technically work, but this caused a couple issues during testing.
+- Row header doesn't fill in all the way without manual extension, will fix at some point.
+- preserve_excess button mislabeled in the code somewhere, no big deal, simply refers to what to do with extra copies of items that don't merge into a proper tier and still works correctly.
 
 ## Requirements
 
