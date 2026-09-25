@@ -29,3 +29,6 @@ fonts/*.txt
 Thumbs.db
 desktop.ini
 .DS_Store
+
+data/*.zip
+swfs/*.zip
