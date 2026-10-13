@@ -1,6 +1,20 @@
 """
 Furniture Upgrade - PySide6 save editor for Mewgenics
 ------------------------------------------------------
+v20 changes:
+  * Unified preview: merge groups AND standalone _plusN items shown in
+    one tree. Standalone rows are marked "organic" (made by this tool's
+    merge feature) vs "appeared" (leaked from furniture boxes / loot).
+  * Multi-select on the tree + "Demote selected" button. Rewrites the
+    selected _plusN row IDs back to base tier in place. No children,
+    no parked rows. Perfect for nuking box-dropped plus items.
+  * Organic tracking via furniture_organic_plus table. Every merge
+    performed by this tool tags its kept row as organic. Demote
+    removes the tag.
+  * First-run adoption prompt: if the save already has _plusN items
+    but the tracking table is empty, asks once whether to adopt them
+    all as organic.
+
 v19 changes:
   * Preserve-excess merge mode: consume only the minimum members needed
     to reach the target tier; leftovers stay in the furniture table.
@@ -1521,6 +1535,21 @@ def parse_blob(blob):
     return magic, item_id, loc, stats, off
 
 
+def blob_variant(blob):
+    """Per-instance variant flag stored right after the item id (0 = normal,
+    2 = rare in observed saves). Rare and normal copies of the same base item
+    must never be merged together, so this is part of the merge group key."""
+    id_len, = struct.unpack_from('<I', blob, 4)
+    v, = struct.unpack_from('<i', blob, 12 + id_len)
+    return v
+
+
+def variant_label(v):
+    if not v:
+        return ""
+    return "rare" if v == 2 else f"variant {v}"
+
+
 def rewrite_item_id(blob, new_item_id):
     magic, old_id, loc, stats, _ = parse_blob(blob)
     new_id_bytes = new_item_id.encode('ascii')
@@ -1621,30 +1650,38 @@ def build_plan(rows, include_special=True, custom_excludes=None,
         base, plus_n = split_plus_suffix(item_id)
         if not base:
             continue
+        try:
+            variant = blob_variant(blob)
+        except Exception:
+            variant = 0
         parsed.append({
             'key': key, 'blob': blob, 'item_id': item_id,
             'loc': loc, 'stats': stats,
-            'base': base, 'plus_n': plus_n,
+            'base': base, 'plus_n': plus_n, 'variant': variant,
             'value': item_value(plus_n)})
+    # Group by (base, variant): rare copies only ever merge with other rare
+    # copies of the same item, normal with normal.
     groups = {}
     for p in parsed:
-        groups.setdefault(p['base'], []).append(p)
+        groups.setdefault((p['base'], p['variant']), []).append(p)
     plan, skipped = [], []
-    for base, members in groups.items():
+    for (base, variant), members in groups.items():
+        vlabel = variant_label(variant)
+        sk_name = f"{base} [{vlabel}]" if vlabel else base
         total_value = sum(m['value'] for m in members)
         if total_value < 2:
             continue
         if base in exclude:
-            skipped.append((base, len(members), 'excluded')); continue
+            skipped.append((sk_name, len(members), 'excluded')); continue
         if not include_special and is_statue_or_idol(base):
-            skipped.append((base, len(members),
+            skipped.append((sk_name, len(members),
                             'idol (check the box to include)')); continue
         target = target_plus_from_value(total_value)
         if target < 1:
             continue
         best_current = max(m['plus_n'] for m in members)
         if target <= best_current:
-            skipped.append((base, len(members),
+            skipped.append((sk_name, len(members),
                 f'already at plus{best_current} (total value {total_value})'))
             continue
         new_id = f"{base}_plus{target}"
@@ -1669,9 +1706,9 @@ def build_plan(rows, include_special=True, custom_excludes=None,
         try:
             new_blob = rewrite_item_id(keep['blob'], new_id)
         except Exception as e:
-            skipped.append((base, len(members), f'rewrite failed: {e}')); continue
+            skipped.append((sk_name, len(members), f'rewrite failed: {e}')); continue
         plan.append({
-            'base': base, 'keep_key': keep['key'],
+            'base': base, 'variant': variant, 'keep_key': keep['key'],
             'keep_loc': keep['loc'], 'keep_old_id': keep['item_id'],
             'park_keys': [p['key'] for p in parks],
             'park_old_ids': [p['item_id'] for p in parks],
@@ -1708,6 +1745,13 @@ def ensure_side_tables(con):
         id INTEGER PRIMARY KEY AUTOINCREMENT, merged_at TEXT, kept_key INTEGER,
         old_data BLOB, deleted_keys TEXT, plus_level INTEGER,
         new_item_id TEXT) STRICT""")
+    # v20: tracks keys of _plusN rows that were created by this tool's
+    # merge feature. Anything NOT in here is "appeared" (boxes, loot,
+    # pre-existing items the user didn't adopt).
+    cur.execute("""CREATE TABLE IF NOT EXISTS furniture_organic_plus (
+        key INTEGER PRIMARY KEY,
+        adopted_at TEXT NOT NULL
+    ) STRICT""")
     con.commit()
 
 
@@ -2476,11 +2520,12 @@ class FurnitureUpgradeWindow(QMainWindow):
         self.tree.setColumnCount(4)
         self.tree.setHeaderLabels([
             tr("col_base"), tr("col_copies"),
-            tr("col_becomes"), tr("col_parked")])
+            tr("col_becomes"), tr("col_source")])
         self.tree.setAlternatingRowColors(True)
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
-        self.tree.setSelectionMode(QAbstractItemView.NoSelection)
+        # v20: multi-select so standalone plus items can be demoted.
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.setSortingEnabled(True)
         self.tree.sortByColumn(0, Qt.AscendingOrder)
         header = self.tree.header()
@@ -2488,7 +2533,7 @@ class FurnitureUpgradeWindow(QMainWindow):
             header.setSectionResizeMode(i, QHeaderView.Interactive)
         header.setSectionsClickable(True)
         self.tree.setColumnWidth(0, 300); self.tree.setColumnWidth(1, 90)
-        self.tree.setColumnWidth(2, 340); self.tree.setColumnWidth(3, 90)
+        self.tree.setColumnWidth(2, 340); self.tree.setColumnWidth(3, 140)
         self.tree.setMinimumHeight(140)
         self._wide_header = WideGrabHeaderFilter(header)
         header.installEventFilter(self._wide_header)
@@ -2548,6 +2593,13 @@ class FurnitureUpgradeWindow(QMainWindow):
         self.debug_dump_btn.setVisible(self.show_diagnostic_tools)
         btn_row.addWidget(self.debug_dump_btn)
         btn_row.addStretch(1)
+        # v20: Demote acts on multi-selected standalone plus-tier rows.
+        demote = QPushButton(tr("demote_selected"))
+        demote.setToolTip(
+            "Rewrite selected plus-tier rows back to base tier in place.\n"
+            "No children, no parked rows. Perfect for box-dropped items.")
+        demote.clicked.connect(self._demote_selected)
+        btn_row.addWidget(demote)
         merge = QPushButton(tr("merge_dupes")); merge.setObjectName("AccentBtn")
         merge.clicked.connect(self._apply); btn_row.addWidget(merge)
         outer.addLayout(btn_row)
@@ -2710,7 +2762,7 @@ class FurnitureUpgradeWindow(QMainWindow):
         path = self.path_edit.text().strip()
         out_path = os.path.join(_writable_base_dir(), "FurnitureUpgrade-debug.txt")
         lines = []
-        lines.append(f"FurnitureUpgrade v19 debug dump")
+        lines.append(f"FurnitureUpgrade v20 debug dump")
         lines.append(f"Timestamp: {datetime.datetime.now().isoformat()}")
         lines.append(f"Platform: {sys.platform}")
         lines.append(f"Python: {sys.version.split()[0]}")
@@ -2729,6 +2781,12 @@ class FurnitureUpgradeWindow(QMainWindow):
                 cur = con.cursor()
                 total = cur.execute("SELECT COUNT(*) FROM furniture").fetchone()[0]
                 lines.append(f"\nTotal furniture rows: {total}")
+                try:
+                    org = cur.execute(
+                        "SELECT COUNT(*) FROM furniture_organic_plus").fetchone()[0]
+                    lines.append(f"Organic-tracked keys: {org}")
+                except Exception:
+                    lines.append("Organic table: not present yet")
                 for key, data in cur.execute(
                     "SELECT key, data FROM furniture ORDER BY key LIMIT 10"):
                     try:
@@ -2795,9 +2853,100 @@ class FurnitureUpgradeWindow(QMainWindow):
             self._log(f"  build_plan error: {e}"); fu_error(self, APP_TITLE, str(e)); return
         self._log(f"Read {len(rows)} furniture rows; "
                   f"{len(self.groups)} unique base items.")
+
+        # ---- v20: organic tracking + standalone plus items ----
+        organic_keys = set()
+        standalone_plus = []
+        try:
+            con = sqlite3.connect(path)
+            try:
+                ensure_side_tables(con)
+                organic_keys = set(
+                    r[0] for r in con.execute(
+                        "SELECT key FROM furniture_organic_plus").fetchall()
+                )
+
+                # First-run adoption prompt: if we've never asked AND the
+                # table is empty AND there are plus items, offer to mark
+                # them all as organic.
+                if not self.config.get("organic_adopted_v1"):
+                    all_plus = []
+                    for key, blob in rows:
+                        try:
+                            _, iid, _, _, _ = parse_blob(blob)
+                        except Exception:
+                            continue
+                        base, plus_n = split_plus_suffix(iid)
+                        if plus_n > 0 and base:
+                            all_plus.append({'key': key, 'item_id': iid})
+                    if all_plus and not organic_keys:
+                        n = len(all_plus)
+                        msg = (
+                            f"Found {n} upgraded (_plusN) furniture "
+                            f"item(s) in this save.\n\n"
+                            "Were these made by THIS tool's merge feature?\n\n"
+                            "  • Yes — mark them all as organic "
+                            "(tracked by the tool)\n"
+                            "  • No  — leave them unmarked; new merges "
+                            "will be tracked from now on\n\n"
+                            "Either way, individual items can be demoted "
+                            "to base tier later."
+                        )
+                        if fu_question(self, APP_TITLE, msg):
+                            now = datetime.datetime.now().isoformat(
+                                timespec='seconds')
+                            cur = con.cursor()
+                            for item in all_plus:
+                                cur.execute(
+                                    "INSERT OR IGNORE INTO "
+                                    "furniture_organic_plus (key, adopted_at) "
+                                    "VALUES (?, ?)",
+                                    (item['key'], now))
+                            con.commit()
+                            organic_keys = set(i['key'] for i in all_plus)
+                            self._log(f"Adopted {n} existing _plusN item(s) "
+                                      f"as organic.")
+                        else:
+                            self._log(f"Left {n} existing _plusN item(s) "
+                                      f"unmarked (will show as 'appeared').")
+                    self.config["organic_adopted_v1"] = True
+                    save_config(self.config)
+
+                # Keys already claimed by the merge plan
+                plan_keys = set()
+                for p in self.plan:
+                    plan_keys.add(p['keep_key'])
+                    plan_keys.update(p['park_keys'])
+                    plan_keys.update(p.get('leftover_keys', []))
+
+                # Collect standalone plus items
+                for key, blob in rows:
+                    if key in plan_keys:
+                        continue
+                    try:
+                        _, iid, loc, stats, _ = parse_blob(blob)
+                    except Exception:
+                        continue
+                    base, plus_n = split_plus_suffix(iid)
+                    if plus_n < 1 or not base:
+                        continue
+                    standalone_plus.append({
+                        'key': key, 'item_id': iid, 'base': base,
+                        'plus_n': plus_n, 'organic': key in organic_keys,
+                    })
+            finally:
+                con.close()
+        except Exception as e:
+            self._log(f"⚠ organic tracking error: {e}")
+
+        # ---- populate tree ----
         dup_groups = sum(1 for members in self.groups.values()
                          if sum(m['value'] for m in members) >= 2)
-        if not self.plan:
+        total_plus = len(standalone_plus)
+        organic_n = sum(1 for s in standalone_plus if s['organic'])
+        appeared_n = total_plus - organic_n
+
+        if not self.plan and not standalone_plus:
             self.tree.addTopLevelItem(
                 QTreeWidgetItem([tr("no_mergeable_groups"), "", "", ""]))
             if dup_groups == 0:
@@ -2807,32 +2956,73 @@ class FurnitureUpgradeWindow(QMainWindow):
                 self._set_status(tr("all_skipped"),
                                  THEMES[self.theme_name]["warn"])
         else:
-            self._set_status(tr("groups_ready").format(n=len(self.plan)),
-                             THEMES[self.theme_name]["good"])
+            msg = tr("groups_ready").format(n=len(self.plan))
+            if total_plus:
+                msg += f"  |  {total_plus} plus-item(s): {organic_n} organic, {appeared_n} appeared"
+            self._set_status(msg, THEMES[self.theme_name]["good"])
+
         for p in self.plan:
             base = p['base']
             disp = display_name_for(base, self.display_names)
             item_col = f"{disp}  —  {base}" if disp else base
+            if variant_label(p.get('variant', 0)):
+                item_col += f"  [{variant_label(p['variant'])}]"
             if p['best_current'] > 0:
                 item_col += f"  (best: plus{p['best_current']})"
             new_disp = display_name_for(p['new_id'], self.display_names)
             new_col = (f"{new_disp}  —  {p['new_id']}" if new_disp else p['new_id'])
-            it = QTreeWidgetItem([item_col, str(p['count']),
-                                  new_col, str(len(p['park_keys']))])
+            left_n = len(p.get('leftover_keys', []))
+            notes = f"keeps 1, parks {len(p['park_keys'])}"
+            if left_n:
+                notes += f", keeps {left_n}"
+            it = QTreeWidgetItem([item_col, f"{p['count']} copies",
+                                  f"→ {new_col}", notes])
+            it.setData(0, Qt.UserRole, 'merge')
             it.setData(1, Qt.UserRole, int(p['count']))
             it.setData(3, Qt.UserRole, int(len(p['park_keys'])))
             it.setToolTip(0, item_col); it.setToolTip(2, new_col)
             self.tree.addTopLevelItem(it)
+
+        for item in standalone_plus:
+            disp = display_name_for(item['base'], self.display_names)
+            item_col = item['item_id']
+            if disp:
+                item_col += f"  ({disp})"
+            src = tr("source_organic") if item['organic'] else tr("source_appeared")
+            it = QTreeWidgetItem([
+                item_col,
+                f"+{item['plus_n']}",
+                f"demote → {item['base']}",
+                src])
+            it.setData(0, Qt.UserRole, 'plus')
+            it.setData(0, Qt.UserRole + 1, item['key'])
+            it.setData(0, Qt.UserRole + 2, item['item_id'])
+            it.setData(0, Qt.UserRole + 3, item['base'])
+            it.setData(1, Qt.UserRole, int(item['plus_n']))
+            if not item['organic']:
+                warn = QColor(THEMES[self.theme_name].get("warn", "#ffd68a"))
+                for c in range(4):
+                    it.setForeground(c, QBrush(warn))
+            it.setToolTip(0, item_col)
+            it.setToolTip(2, f"Rewrite {item['item_id']} → {item['base']}")
+            self.tree.addTopLevelItem(it)
+
         self.tree.setSortingEnabled(True)
         self.tree.sortByColumn(0, Qt.AscendingOrder)
+
         for base, n, reason in self.skipped:
             self._log(f"  skipped: {base} ({n} copies) - {reason}")
+        if total_plus:
+            self._log(f"Plus-tier items in save: {total_plus} "
+                      f"({organic_n} organic, {appeared_n} appeared)")
 
     def _plan_to_lines(self):
         lines = []
         for p in self.plan:
             lines.append(
-                f"MERGE  {p['base']}  ({p['count']} rows, "
+                f"MERGE  {p['base']}"
+                f"{' [' + variant_label(p.get('variant', 0)) + ']' if p.get('variant') else ''}"
+                f"  ({p['count']} rows, "
                 f"total value {p['total_value']})  ->  {p['new_id']}")
             lines.append(f"       keep : key={p['keep_key']}  "
                          f"loc={p['keep_loc']!r}  ({p['keep_old_id']})")
@@ -2884,6 +3074,11 @@ class FurnitureUpgradeWindow(QMainWindow):
                     cur.execute("DELETE FROM furniture WHERE key=?", (dk,))
                 cur.execute("UPDATE furniture SET data=? WHERE key=?",
                             (p['new_blob'], p['keep_key']))
+                # v20: mark the kept row as an organic merge
+                cur.execute(
+                    "INSERT OR IGNORE INTO furniture_organic_plus "
+                    "(key, adopted_at) VALUES (?, ?)",
+                    (p['keep_key'], now))
                 cur.execute("""INSERT INTO furniture_merge_log
                     (merged_at, kept_key, old_data, deleted_keys, plus_level, new_item_id)
                     VALUES (?, ?, ?, ?, ?, ?)""",
@@ -2904,6 +3099,89 @@ class FurnitureUpgradeWindow(QMainWindow):
         self._log(f"Applied {len(self.plan)} merge(s).")
         fu_info(self, APP_TITLE,
                 f"{tr('merge_complete')}\n{tr('backup_label')} {backup}")
+        self._preview()
+
+    def _demote_selected(self):
+        path = self.path_edit.text().strip()
+        if not path or not os.path.isfile(path):
+            fu_error(self, APP_TITLE, tr("pick_valid_save")); return
+        selected = self.tree.selectedItems()
+        if not selected:
+            fu_info(self, APP_TITLE, tr("nothing_selected")); return
+
+        targets = []
+        for it in selected:
+            if it.data(0, Qt.UserRole) != 'plus':
+                continue
+            key = it.data(0, Qt.UserRole + 1)
+            iid = it.data(0, Qt.UserRole + 2)
+            base = it.data(0, Qt.UserRole + 3)
+            if key is None or not iid or not base:
+                continue
+            targets.append((key, iid, base))
+
+        if not targets:
+            fu_info(self, APP_TITLE, tr("nothing_selected")); return
+
+        detail_lines = []
+        for key, iid, base in targets:
+            detail_lines.append(f"DEMOTE  {iid}  ->  {base}   (key={key})")
+
+        backup = make_backup_path(path, "demote")
+        dlg = ConfirmDialog(
+            self,
+            summary_lines=[
+                tr("demote_summary").format(n=len(targets)),
+                tr("close_game_notice"),
+                f"{tr('backup_will_be_written_to')} "
+                f"{os.path.basename(backup)}"],
+            backup_path=backup, detail_lines=detail_lines,
+            confirm_text=tr("demote_now"))
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        try:
+            shutil.copy2(path, backup)
+        except Exception as e:
+            fu_error(self, APP_TITLE, f"{tr('backup_failed')}\n{e}"); return
+        self._log(f"Backup written: {backup}")
+
+        try:
+            con = sqlite3.connect(path)
+        except Exception as e:
+            fu_error(self, APP_TITLE, f"{tr('open_save_failed')}\n{e}"); return
+        try:
+            ensure_side_tables(con)
+            cur = con.cursor()
+            demoted = 0
+            for key, iid, base in targets:
+                row = cur.execute(
+                    "SELECT data FROM furniture WHERE key=?", (key,)).fetchone()
+                if not row:
+                    continue
+                new_blob = rewrite_item_id(row[0], base)
+                cur.execute("UPDATE furniture SET data=? WHERE key=?",
+                            (new_blob, key))
+                # clear organic tag (it's no longer a plus item)
+                cur.execute(
+                    "DELETE FROM furniture_organic_plus WHERE key=?", (key,))
+                demoted += 1
+            con.commit()
+        except Exception as e:
+            con.close()
+            self._log(f"Demote failed: {e}")
+            self._log(traceback.format_exc())
+            fu_error(self, APP_TITLE, f"{tr('demote_failed')}\n{e}")
+            try:
+                shutil.copy2(backup, path)
+            except Exception:
+                pass
+            return
+        con.close()
+        self._log(f"Demoted {demoted} item(s) to base tier.")
+        fu_info(self, APP_TITLE,
+                f"{tr('demote_complete').format(n=demoted)}\n"
+                f"{tr('backup_label')} {backup}")
         self._preview()
 
     def _undo_last(self):
